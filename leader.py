@@ -42,12 +42,12 @@ class LeaderService(leader_pb2_grpc.LeaderServiceServicer):
     def RegisterLearner(self, request, context):
        
         with self.lock:
-            logging.info(f'Registering learner: newtork address: {request.network_address}')
+            logging.info(f'Registering learner: newtork address: {request.network_addr}')
             if len(self.learner_list) < self.max_learners:
 
                 new_id = len(self.learner_list)
-                learner_stub = learner_pb2_grpc.LearnerService(
-                    grpc.insecure_channel(request.network_address, options=GRPC_STUB_OPTIONS)
+                learner_stub = learner_pb2_grpc.LearnerServiceStub(
+                    grpc.insecure_channel(request.network_addr, options=GRPC_STUB_OPTIONS)
                 )
                 data_loader, num_batches = get_data_loader(learner_id=new_id, max_learners=self.max_learners)
                 self.num_batches = num_batches

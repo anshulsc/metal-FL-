@@ -2,7 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-import leader_pb2 as leader__pb2
+import protos.leader_pb2 as leader__pb2
 
 
 class LeaderServiceStub(object):

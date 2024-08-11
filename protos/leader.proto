@@ -42,4 +42,4 @@ message DataChunk {
 
 message GradientData {
     bytes chunk = 1;
-}
+} 

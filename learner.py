@@ -56,4 +56,132 @@ class LearnerService(learner_pb2_grpc.LearnerServiceServicer):
 
             logging.info('Model loaded successfully and moved to device')
 
+    def training_loop(self):
+        logging.info('Starting training loop')
+
+        self.get_data_batches() 
+
+        for batch in self.data_batches:
+            logging.info('Training batch....')
+
+            inputs, labels = batch 
+            inputs, labels = inputs.to(self.device), labels.to(self.device)
+
+            first_number = inputs.view(-1)[0].item()
+            print(f"First number in batch: {first_number}")
+
+            outputs  = self.model(inputs)
             
+            loss  = self.criterion(outputs, labels)
+            loss.backward()
+            logging.info(f'Loss: {loss.item()}')
+
+            gradients = [param.grad for param in self.model.parameters() if param.grad is not None]
+
+            print(f"Gradient norms : {gradients[0].norm().item()}")
+
+            buffer = io.BytesIO()
+            torch.save(gradients, buffer)
+            buffer.seek(0)
+            serialized_gradients = buffer.read()
+            logging.info('Sending gradients to leader')
+            self.leader_stub.AccumulateGradients(leader_pb2.GradientData(chunk=serialized_gradients))
+
+
+            self.model.zero_grad()
+
+            self.sync_model_event.wait()
+            self.sync_model_event.clear()
+
+        logging.info('Completed one training loop iteration')
+
+        self.training_loop()
+
+    
+    def StartTraining(self, request, context):
+       logging.info('Received StartTraining request')
+       thread = threading.Thread(target=self.training_loop)
+       thread.start()
+       return learner_pb2.Ack(sucess=True, message=' Model Training started')
+    
+    def get_data_batches(self):
+        logging.info('Getting data batches')
+        data_req = leader_pb2.LearnerDataRequest(network_addr = self.network_addr)
+        data_stream = self.leader_stub.GetData(data_req)
+        batches = []
+        data_received = False
+
+        for data_chunk in data_stream:
+            buffer = io.BytesIO(data_chunk.chunk)
+            try:
+                tensor = torch.load(buffer)
+            except Exception as e:
+                logging.error(f'Error loading data batch : {e}')
+            finally:
+                batches.append(tensor)
+                data_received = True
+
+        if not data_received:
+            logging.error('No data received from leader')
+            os._exit(0)
+        
+        self.data_batches = batches
+
+    
+    def SyncModelState(self, request, context):
+        logging.info('Synchronizing model state...')
+
+        # load model
+        buffer = io.BytesIO(request.chunk)
+        new_model_state = torch.load(buffer, map_location=self.device)
+        self.model.load_state_dict(new_model_state)
+        self.sync_model_event.set()
+
+        first_param = next(self.model.parameters()).detach().cpu().numpy().flatten()[0]
+        logging.info(f'First parameter after sync: {first_param}')
+        logging.info('Model state synchronized successfully')
+        
+        return learner_pb2.Ack(success=True, message="Model state synchronized successfully")
+
+def serve(network_addr, learner_port, leader_stub):
+        server = grpc.server(futures.ThreadPoolExecutor(max_workers=5), options=GRPC_STUB_OPTIONS)
+        learner_service = LearnerService(network_addr, leader_stub)
+        learner_pb2_grpc.add_LearnerServiceServicer_to_server(learner_service, server)
+        learner_service.load_model()
+        logging.info(f'Learner started on {network_addr}')
+        server.add_insecure_port(f'0.0.0.0:{learner_port}')
+        server.start()
+        try:
+            while True:
+                time.sleep(86400)
+        except KeyboardInterrupt:
+            server.stop(0)
+
+
+def parse_args():
+        parser = argparse.ArgumentParser(description='Learner Service')
+        parser.add_argument('--leader-address', type=str, required=True, help='Network address of the leader in the form 192.168.xxx.xxx:xxxx')
+        parser.add_argument('--port', type=int, default=10135, help='Port you want the learner to use')
+        args = parser.parse_args()
+        return args
+
+if __name__ == '__main__':
+    args = parse_args()
+    leader_address = args.leader_address
+    learner_port = args.port
+    print(leader_address)
+
+    channel = grpc.insecure_channel(leader_address, options=GRPC_STUB_OPTIONS)
+    leader_stub = leader_pb2_grpc.LeaderServiceStub(channel)
+
+    network_addr = f"{socket.gethostbyname(socket.gethostname())}:{learner_port}"
+
+    learner_info = leader_pb2.LearnerInfo(network_addr=network_addr)
+
+    logging.info('Registering learner...')
+    is_registered = leader_stub.RegisterLearner(learner_info)
+    if is_registered.success:
+        serve(network_addr, learner_port, leader_stub)
+    else:
+        logging.error('Registering learner unsuccessful')
+

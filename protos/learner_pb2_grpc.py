@@ -2,7 +2,7 @@
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 
-import learner_pb2 as learner__pb2
+import protos.learner_pb2 as learner__pb2
 
 
 class LearnerServiceStub(object):
